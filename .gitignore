@@ -1,0 +1,9 @@
+# 実際の値を入れたパラメーター ファイルは公開しない
+*.local.json
+*.local.bicepparam
+.env
+*.pfx
+*.pem
+*.key
+# Bicep のビルド結果
+*.json.bak
