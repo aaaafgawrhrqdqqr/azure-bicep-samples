@@ -1,0 +1,8 @@
+# どの OS で取得しても改行を LF にそろえ、SHA-256 が記事の値と一致するようにする
+* text=auto eol=lf
+*.bicep text eol=lf
+*.bicepparam text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
