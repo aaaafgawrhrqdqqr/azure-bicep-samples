@@ -1,0 +1,12 @@
+{
+  "analyzers": {
+    "core": {
+      "enabled": true,
+      "rules": {
+        "no-unused-params": { "level": "error" },
+        "no-unused-existing-resources": { "level": "error" },
+        "use-recent-api-versions": { "level": "warning" }
+      }
+    }
+  }
+}
