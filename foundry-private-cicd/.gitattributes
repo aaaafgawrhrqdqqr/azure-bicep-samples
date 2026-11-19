@@ -1,0 +1,3 @@
+# シェル スクリプトは Linux で動くので、Windows で編集しても改行を LF に保つ
+*.sh text eol=lf
+Dockerfile text eol=lf

@@ -1,0 +1,70 @@
+# =============================================================================
+# エージェント層: agents/*.yaml を Foundry に反映し、動作確認する
+#
+#   validate … 標準の GitHub-hosted runner（無料）。定義の書き方だけを検証する
+#   deploy   … VNet 内の Self-hosted runner（Container Apps ジョブ）。
+#              Foundry の Private Endpoint 経由で反映する。
+#              認証は Runner の Managed Identity（GitHub 側に資格情報なし）
+# =============================================================================
+name: agents
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agents/**"
+      - "scripts/**"
+      - ".github/workflows/agents.yml"
+  pull_request:
+    paths:
+      - "agents/**"
+      - "scripts/**"
+  # インフラを更新したあと（Runner やモデルが変わったあと）にも反映し直す
+  workflow_run:
+    workflows: [infra]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agents
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    # infra が失敗したときは動かさない
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: エージェント定義を検証
+        run: python scripts/deploy_agents.py --validate-only
+
+  deploy:
+    needs: validate
+    # プル リクエストでは反映しない（main に入ったものだけを反映する）
+    if: github.event_name != 'pull_request'
+    # VNet 内の Container Apps ジョブで動く Runner を指定する
+    runs-on: [self-hosted, linux, foundry-private]
+    # FOUNDRY_PROJECT_ENDPOINT と AZURE_CLIENT_ID は、Runner（Container Apps ジョブ）の
+    # 環境変数として Bicep で設定済みなので、ここでは指定しない
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python の準備
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r scripts/requirements.txt
+
+      - name: エージェントを反映
+        run: .venv/bin/python scripts/deploy_agents.py
+
+      - name: 動作確認
+        run: .venv/bin/python scripts/smoke_test.py

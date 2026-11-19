@@ -1,0 +1,101 @@
+# =============================================================================
+# インフラ層: VNet、Foundry（閉域）、Runner（Container Apps ジョブ）を作る・更新する
+#
+# 実行場所: 標準の GitHub-hosted runner（無料枠）
+#   ARM（管理プレーン）は公開エンドポイントなので、Foundry を閉じていても外から作れる。
+# 認証: OIDC（GitHub に Azure のシークレットを置かない）
+# =============================================================================
+name: infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - "runner/**"
+      - ".github/workflows/infra.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC のトークンを発行するために必要
+  contents: read
+
+concurrency:
+  group: infra
+  cancel-in-progress: false # デプロイの途中で止めない
+
+env:
+  RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+  LOCATION: ${{ vars.AZURE_LOCATION }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure にサインイン（OIDC）
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR を作る（base.bicep）
+        id: base
+        run: |
+          ACR_NAME=$(az deployment group create \
+            --resource-group "$RG" \
+            --name base \
+            --template-file infra/base.bicep \
+            --parameters location="$LOCATION" \
+            --query properties.outputs.acrName.value -o tsv)
+          echo "acr_name=$ACR_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Runner イメージを作って push（runner/ が変わったときだけ）
+        id: image
+        env:
+          ACR_NAME: ${{ steps.base.outputs.acr_name }}
+          # runner/ 配下の内容から作ったハッシュをタグにする（中身が同じならビルドしない）
+          RUNNER_HASH: ${{ hashFiles('runner/**') }}
+        run: |
+          TAG="${RUNNER_HASH:0:12}"
+          IMAGE="${ACR_NAME}.azurecr.io/gh-runner:${TAG}"
+          if az acr repository show --name "$ACR_NAME" --image "gh-runner:${TAG}" >/dev/null 2>&1; then
+            echo "同じイメージがあるのでビルドを省略: $IMAGE"
+          else
+            az acr login --name "$ACR_NAME"
+            docker build -t "$IMAGE" runner
+            docker push "$IMAGE"
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Foundry と Runner を作る（main.bicep）
+        env:
+          ACR_NAME: ${{ steps.base.outputs.acr_name }}
+          RUNNER_IMAGE: ${{ steps.image.outputs.image }}
+          RUNNER_GITHUB_PAT: ${{ secrets.RUNNER_GITHUB_PAT }}
+        run: |
+          az deployment group create \
+            --resource-group "$RG" \
+            --name main \
+            --template-file infra/main.bicep \
+            --parameters \
+              location="$LOCATION" \
+              acrName="$ACR_NAME" \
+              runnerImage="$RUNNER_IMAGE" \
+              githubOwner="${{ github.repository_owner }}" \
+              githubRepo="${{ github.event.repository.name }}" \
+              githubPat="$RUNNER_GITHUB_PAT" \
+            --query properties.outputs -o json > outputs.json
+
+          ENDPOINT=$(jq -r .projectEndpoint.value outputs.json)
+          {
+            echo "### デプロイ結果"
+            echo "- Foundry: \`$(jq -r .foundryName.value outputs.json)\`"
+            echo "- モデルのデプロイ: \`$(jq -r .modelDeploymentName.value outputs.json)\`"
+            echo "- Runner ジョブ: \`$(jq -r .runnerJobName.value outputs.json)\`"
+            echo "- プロジェクトのエンドポイント: \`$ENDPOINT\`"
+            echo ""
+            echo "このあと agents ワークフローが自動で動き、エージェントを反映します。"
+          } >> "$GITHUB_STEP_SUMMARY"
